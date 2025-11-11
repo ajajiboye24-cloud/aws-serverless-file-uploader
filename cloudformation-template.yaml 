@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Serverless File Upload App with S3, Lambda, and API Gateway
+
+Resources:
+
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: my-app-uploads-severless
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:Put
+            Function: !GetAtt ProcessUploaderFile.Arn
+
+  ProcessedBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: my-app-processed-severless
+
+  GeneratePresignedURL:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: GeneratePresignedURL
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.11
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+
+          s3 = boto3.client('s3')
+
+          def lambda_handler(event, context):
+              bucket_name = "my-app-uploads-severless"
+              file_name = "test-file.txt"
+              url = s3.generate_presigned_url(
+                  ClientMethod='put_object',
+                  Params={'Bucket': bucket_name, 'Key': file_name},
+                  ExpiresIn=3600
+              )
+              return {
+                  'statusCode': 200,
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Methods': 'OPTIONS,POST',
+                      'Access-Control-Allow-Headers': 'Content-Type'
+                  },
+                  'body': json.dumps({'uploadURL': url, 'key': file_name})
+              }
+
+  ProcessUploaderFile:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ProcessUploaderFile
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.11
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import urllib.parse
+
+          s3 = boto3.client('s3')
+
+          def lambda_handler(event, context):
+              print("Event:", json.dumps(event))
+              source_bucket = event['Records'][0]['s3']['bucket']['name']
+              source_key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'])
+              destination_bucket = 'my-app-processed-severless'
+              s3.copy_object(
+                  CopySource={'Bucket': source_bucket, 'Key': source_key},
+                  Bucket=destination_bucket,
+                  Key=source_key
+              )
+              print(f"✅ Copied {source_key} to {destination_bucket}")
+              return {'statusCode': 200, 'body': 'File processed successfully'}
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaExecutionRole-ServerlessApp
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:CopyObject
+                Resource: arn:aws:s3:::my-app-*/*
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: ServerlessUploadAPI
+
+  ApiResourceUpload:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: upload
+      RestApiId: !Ref ApiGateway
+
+  ApiMethodPostUpload:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiResourceUpload
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GeneratePresignedURL.Arn}/invocations
+
+  LambdaPermissionApi:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GeneratePresignedURL
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+
+  LambdaPermissionS3:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ProcessUploaderFile
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: arn:aws:s3:::my-app-uploads-severless
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint for uploading files
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/upload"
