@@ -1,4 +1,5 @@
 # AWS Serverless File Uploader
+<img width="1550" height="516" alt="diagram-export-11-11-2025-2_29_48-PM" src="https://github.com/user-attachments/assets/91ff4148-dfcf-4603-b19e-594bea725a2a" />
 
 This project demonstrates a fully serverless file upload pipeline built with **AWS Lambda**, **API Gateway**, and **S3**.
 
